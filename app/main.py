@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .core.config import settings
 from .api.v1 import api_router
 from .services.vector_db_service import vector_db_service
+from .core.database import init_db
 
 # Configure logging
 logging.basicConfig(
@@ -87,6 +88,13 @@ async def startup_event():
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Max concurrent requests: {settings.MAX_CONCURRENT_REQUESTS}")
     logger.info(f"Request timeout: {settings.REQUEST_TIMEOUT}s")
+    
+    # Initialize database tables
+    try:
+        init_db()
+        logger.info("Database tables initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
     
     # Initialize vector database if enabled
     if vector_db_service.enabled:

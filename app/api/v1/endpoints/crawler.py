@@ -4,11 +4,13 @@ Crawler Endpoints - FastAPI routes for crawling operations
 
 import logging
 from typing import Annotated, Optional
-from fastapi import APIRouter, HTTPException, status, Form
+from fastapi import APIRouter, HTTPException, status, Form, Depends
 
 from ....schemas.crawler import CrawlRequest, CrawlResponse, CrawlErrorResponse, SearchResponse
 from ....services.crawler import crawler_service
 from ....services.vector_db_service import vector_db_service
+from ....services.database_service import database_service
+from ....core.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ async def crawl(
     seed_url: Annotated[str, Form(description="Starting URL to crawl (e.g., https://example.com)", examples=["https://example.com"])],
     max_pages: Annotated[int, Form(description="Maximum number of pages to crawl (1-500)", ge=1, le=500)] = 10,
     follow_external_links: Annotated[bool, Form(description="Follow links outside the base domain")] = False,
+    db = Depends(get_db),
 ) -> CrawlResponse:
     """
     Crawl and scrape a website
@@ -69,6 +72,12 @@ async def crawl(
             follow_external_links=follow_external_links,
         )
 
+        # Store crawled content in database
+        if result.pages:
+            logger.info("Storing crawled content in database...")
+            db_stats = database_service.store_pages_batch(db, result.pages, seed_url)
+            logger.info(f"Database storage: {db_stats}")
+        
         logger.info(f"Crawl completed successfully: {result.total_pages_crawled} pages")
         return result
 
