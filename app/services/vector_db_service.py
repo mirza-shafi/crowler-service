@@ -12,7 +12,8 @@ from sqlalchemy.future import select
 from sentence_transformers import SentenceTransformer
 
 from ..core.config import settings
-from ..models.content_manager import Base, ContentManager
+from ..models.content_manager import Base, ContentManager, ContentChunk
+from ..services.text_chunker import text_chunker
 from ..schemas.crawler import PageContent
 
 logger = logging.getLogger(__name__)
@@ -85,43 +86,84 @@ class VectorDatabaseService:
             return False
     
     def _create_embedding(self, text: str) -> List[float]:
-        """Generate embedding vector for text"""
+        """
+        Generate embedding vector for text
+        NOTE: For RAG, strictly prefer using store_content_chunks which handles splitting
+        """
         if not self.model:
             raise RuntimeError("Embedding model not initialized")
         
-        # Truncate text if too long
-        max_chars = 5000
+        # Truncate text if too long (legacy support for single-vector docs)
+        # Increased limit, but ideally should be used only for short texts
+        max_chars = 8000
         if len(text) > max_chars:
             text = text[:max_chars]
         
         embedding = self.model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
     
-    async def store_page(self, page: PageContent, base_url: str) -> bool:
+    async def store_content_chunks(self, content_id: str, text: str, metadata: Dict = None) -> int:
         """
-        Store a single crawled page with embedding
+        Split text into chunks, generate embeddings, and store them
         
         Args:
-            page: PageContent object with crawled data
-            base_url: Base URL of the crawl session
+            content_id: UUID of the parent ContentManager record
+            text: Full text content
+            metadata: Optional metadata to attach to chunks
             
         Returns:
-            bool: Success status
+            int: Number of chunks stored
+        """
+        if not self.enabled:
+            return 0
+            
+        try:
+            # 1. Split into chunks
+            chunks = text_chunker.chunk_text(text, strategy="recursive")
+            if not chunks:
+                return 0
+                
+            logger.info(f"Splitting content {content_id} into {len(chunks)} chunks")
+            
+            async with self.async_session_maker() as session:
+                # 2. Process each chunk
+                for chunk in chunks:
+                    # Generate embedding
+                    embedding = self._create_embedding(chunk.text)
+                    
+                    # Create Chunk record
+                    chunk_record = ContentChunk(
+                        content_id=content_id,
+                        chunk_index=chunk.chunk_index,
+                        start_char=chunk.start_char,
+                        end_char=chunk.end_char,
+                        token_count=chunk.token_count,
+                        chunk_text=chunk.text,
+                        embedding=embedding
+                    )
+                    session.add(chunk_record)
+                
+                await session.commit()
+                logger.info(f"Stored {len(chunks)} chunks for content {content_id}")
+                return len(chunks)
+                
+        except Exception as e:
+            logger.error(f"Error storing chunks for {content_id}: {e}")
+            return 0
+
+    async def store_page(self, page: PageContent, base_url: str) -> bool:
+        """
+        Store a single crawled page with embedding (AND chunks)
         """
         if not self.enabled:
             logger.debug("Vector storage not enabled, skipping")
             return False
         
         try:
-            # Generate embedding
+            # Generate embedding for the full doc (summary/legacy)
             text_for_embedding = f"{page.title or ''} {page.text_content}".strip()
-            if not text_for_embedding:
-                logger.warning(f"No text content to embed for {page.url}")
-                return False
+            embedding = self._create_embedding(text_for_embedding) if text_for_embedding else None
             
-            embedding = self._create_embedding(text_for_embedding)
-            
-            # Store in database
             async with self.async_session_maker() as session:
                 # Check if URL already exists
                 result = await session.execute(
@@ -138,6 +180,13 @@ class VectorDatabaseService:
                     existing.images_count = page.images_count
                     existing.crawl_timestamp = datetime.fromisoformat(page.crawl_timestamp.replace('Z', '+00:00'))
                     existing.embedding = embedding
+                    content_id = existing.id
+                    
+                    # Delete old chunks for this content
+                    await session.execute(
+                        text("DELETE FROM content_chunks WHERE content_id = :cid"),
+                        {"cid": existing.id}
+                    )
                     logger.info(f"Updated existing page: {page.url}")
                 else:
                     # Create new record
@@ -152,9 +201,16 @@ class VectorDatabaseService:
                         embedding=embedding
                     )
                     session.add(content)
+                    await session.flush() # flush to get ID
+                    content_id = content.id
                     logger.info(f"Stored new page: {page.url}")
                 
                 await session.commit()
+            
+            # Now store chunks (in a separate transaction/session is fine, or same)
+            # We already committed the parent, now let's store chunks
+            if page.text_content:
+                await self.store_content_chunks(content_id, page.text_content)
             
             return True
             
@@ -163,23 +219,9 @@ class VectorDatabaseService:
             return False
     
     async def store_pages_batch(self, pages: List[PageContent], base_url: str) -> Dict[str, Any]:
-        """
-        Store multiple pages with embeddings in batch
-        
-        Args:
-            pages: List of PageContent objects
-            base_url: Base URL of the crawl session
-            
-        Returns:
-            Dict with storage statistics
-        """
+        """Store multiple pages with embeddings in batch"""
         if not self.enabled:
-            return {
-                "stored": 0,
-                "failed": 0,
-                "total": len(pages),
-                "enabled": False
-            }
+            return {"stored": 0, "failed": 0, "total": len(pages), "enabled": False}
         
         stored_count = 0
         failed_count = 0
@@ -190,8 +232,6 @@ class VectorDatabaseService:
                 stored_count += 1
             else:
                 failed_count += 1
-        
-        logger.info(f"Batch storage completed: {stored_count} stored, {failed_count} failed")
         
         return {
             "stored": stored_count,
@@ -208,14 +248,7 @@ class VectorDatabaseService:
     ) -> List[Dict[str, Any]]:
         """
         Search for similar content using vector similarity
-        
-        Args:
-            query: Search query text
-            top_k: Number of results to return
-            base_url_filter: Optional filter by base URL
-            
-        Returns:
-            List of matching results with scores
+        This now searches CHUNKS but returns parent document info + chunk text
         """
         if not self.enabled:
             return []
@@ -225,20 +258,21 @@ class VectorDatabaseService:
             query_embedding = self._create_embedding(query)
             
             async with self.async_session_maker() as session:
-                # Build query with vector similarity
+                # Query chunks directly
+                # We join with ContentManager to get metadata (title, url)
                 query_stmt = select(
+                    ContentChunk,
                     ContentManager,
-                    ContentManager.embedding.cosine_distance(query_embedding).label('distance')
+                    ContentChunk.embedding.cosine_distance(query_embedding).label('distance')
+                ).join(
+                    ContentManager, ContentChunk.content_id == ContentManager.id
                 )
-                
-                # Only search records that have embeddings
-                query_stmt = query_stmt.where(ContentManager.embedding.isnot(None))
                 
                 # Add base_url filter if provided
                 if base_url_filter:
                     query_stmt = query_stmt.where(ContentManager.base_url == base_url_filter)
                 
-                # Order by similarity and limit
+                # Order by distance (similarity)
                 query_stmt = query_stmt.order_by('distance').limit(top_k)
                 
                 result = await session.execute(query_stmt)
@@ -246,23 +280,25 @@ class VectorDatabaseService:
                 
                 # Format results
                 results = []
-                for content, distance in rows:
-                    # Skip if no embedding (distance is None)
-                    if distance is None:
-                        logger.warning(f"Skipping result for {content.url} - no embedding found")
-                        continue
+                seen_docs = set()
+                
+                for chunk, content, distance in rows:
+                    if distance is None: continue
                     
-                    # Convert distance to similarity score (1 - distance for cosine)
                     similarity_score = 1 - distance
                     
+                    # Construct result result
                     results.append({
                         "id": str(content.id),
+                        "chunk_id": str(chunk.id),
                         "score": float(similarity_score),
                         "url": content.url,
                         "title": content.title,
-                        "content_snippet": content.content_snippet,
+                        # Return the matched CHUNK text, not the whole doc snippet
+                        "content_snippet": chunk.chunk_text, 
                         "base_url": content.base_url,
                         "crawl_timestamp": content.crawl_timestamp.isoformat() if content.crawl_timestamp else None,
+                        "chunk_index": chunk.chunk_index
                     })
                 
                 return results
@@ -292,9 +328,7 @@ class VectorDatabaseService:
                         "content_snippet": content.content_snippet,
                         "base_url": content.base_url,
                         "images_count": content.images_count,
-                        "crawl_timestamp": content.crawl_timestamp.isoformat() if content.crawl_timestamp else None,
                     }
-                
                 return None
         except Exception as e:
             logger.error(f"Error getting content by URL: {e}")
@@ -304,25 +338,39 @@ class VectorDatabaseService:
         """Delete all content associated with a base URL"""
         if not self.enabled:
             return 0
-        
         try:
             async with self.async_session_maker() as session:
-                result = await session.execute(
-                    select(ContentManager).where(ContentManager.base_url == base_url)
-                )
-                contents = result.scalars().all()
-                count = len(contents)
+                # Cascading delete of chunks needs to be handled if not configured in DB
+                # Generally safer to select IDs then delete chunks, then delete parents
                 
-                for content in contents:
-                    await session.delete(content)
+                # Find contents
+                result = await session.execute(
+                    select(ContentManager.id).where(ContentManager.base_url == base_url)
+                )
+                content_ids = result.scalars().all()
+                
+                if not content_ids:
+                    return 0
+
+                # Delete chunks
+                await session.execute(
+                    text("DELETE FROM content_chunks WHERE content_id = ANY(:ids)"),
+                    {"ids": content_ids}
+                )
+                
+                # Delete parents
+                await session.execute(
+                    text("DELETE FROM content_manager WHERE id = ANY(:ids)"),
+                    {"ids": content_ids}
+                )
                 
                 await session.commit()
-                logger.info(f"Deleted {count} records for base_url: {base_url}")
-                return count
+                logger.info(f"Deleted {len(content_ids)} records for base_url: {base_url}")
+                return len(content_ids)
         except Exception as e:
             logger.error(f"Error deleting content: {e}")
             return 0
-    
+            
     async def get_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         if not self.enabled:
@@ -330,23 +378,18 @@ class VectorDatabaseService:
         
         try:
             async with self.async_session_maker() as session:
-                # Count total records
-                result = await session.execute(
-                    select(ContentManager)
-                )
-                total_count = len(result.scalars().all())
+                # Count total docs
+                result = await session.execute(select(ContentManager))
+                total_docs = len(result.scalars().all())
                 
-                # Count unique base URLs
-                result = await session.execute(
-                    text("SELECT COUNT(DISTINCT base_url) FROM content_manager")
-                )
-                unique_bases = result.scalar()
+                # Count total chunks
+                result = await session.execute(text("SELECT COUNT(*) FROM content_chunks"))
+                total_chunks = result.scalar()
                 
                 return {
                     "enabled": True,
-                    "total_pages": total_count,
-                    "unique_base_urls": unique_bases,
-                    "embedding_dimension": settings.EMBEDDING_DIMENSION,
+                    "total_documents": total_docs,
+                    "total_chunks": total_chunks,
                     "embedding_model": settings.EMBEDDING_MODEL,
                 }
         except Exception as e:

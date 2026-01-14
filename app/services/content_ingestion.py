@@ -150,6 +150,15 @@ class ContentIngestionService:
             db.commit()
             db.refresh(content_manager)
             
+            # Store chunks for RAG (if vector DB is enabled)
+            if vector_db_service.enabled:
+                chunks_count = await vector_db_service.store_content_chunks(
+                    content_id=content_manager.id, 
+                    text=text_content,
+                    metadata={"source": "file", "filename": file.filename}
+                )
+                logger.info(f"Generated {chunks_count} chunks for file {file.filename}")
+            
             logger.info(f"File ingested successfully: {file.filename} (ID: {content_manager.id})")
             
             return content_manager
@@ -210,10 +219,11 @@ class ContentIngestionService:
             embedding_model = None
             if vector_db_service.enabled and vector_db_service.model:
                 try:
+                    # Parent embedding (summary)
                     embedding_text = f"{title or ''} {text_content}".strip()
                     embedding = vector_db_service._create_embedding(embedding_text)
                     embedding_model = settings.EMBEDDING_MODEL
-                    logger.info(f"Generated embedding for text: {source_identifier}")
+                    logger.info(f"Generated summary embedding for text: {source_identifier}")
                 except Exception as e:
                     logger.warning(f"Failed to generate embedding: {e}")
             
@@ -242,6 +252,15 @@ class ContentIngestionService:
             db.add(content_manager)
             db.commit()
             db.refresh(content_manager)
+            
+            # Store chunks for RAG
+            if vector_db_service.enabled:
+                chunks_count = await vector_db_service.store_content_chunks(
+                    content_id=content_manager.id, 
+                    text=text_content,
+                    metadata={"source": "text", "identifier": source_identifier}
+                )
+                logger.info(f"Generated {chunks_count} chunks for text {source_identifier}")
             
             logger.info(f"Text ingested successfully: {source_identifier} (ID: {content_manager.id})")
             

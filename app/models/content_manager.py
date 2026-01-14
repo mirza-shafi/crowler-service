@@ -106,6 +106,7 @@ class ContentManager(Base):
     def __repr__(self):
         return f"<ContentManager(url='{self.url}', title='{self.title}', status='{self.crawl_status}')>"
     
+    
     def to_dict(self):
         """Convert model to dictionary"""
         return {
@@ -133,4 +134,40 @@ class ContentManager(Base):
             'http_status_code': self.http_status_code,
             'is_processed': self.is_processed,
             'is_indexed': self.is_indexed,
+            'source_type': self.source_type,
+            'source_identifier': self.source_identifier,
         }
+
+
+class ContentChunk(Base):
+    """
+    Model for storing text chunks with embeddings (One-to-Many with ContentManager)
+    Used for RAG (Retrieval Augmented Generation)
+    """
+    __tablename__ = "content_chunks"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    content_id = Column(UUID(as_uuid=True), index=True, nullable=False)  # ForeignKey logic handled manually or via simple join
+    
+    # Chunk metadata
+    chunk_index = Column(Integer, nullable=False)
+    start_char = Column(Integer, nullable=False)
+    end_char = Column(Integer, nullable=False)
+    token_count = Column(Integer, nullable=False)
+    
+    # Chunk content
+    chunk_text = Column(Text, nullable=False)
+    
+    # Vector embedding
+    embedding = Column(Vector(384), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_content_chunk', 'content_id', 'chunk_index'),
+    )
+    
+    def __repr__(self):
+        return f"<ContentChunk(id={self.id}, content_id={self.content_id}, index={self.chunk_index})>"

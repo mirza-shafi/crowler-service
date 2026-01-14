@@ -181,3 +181,36 @@ class SearchResponse(BaseModel):
             ]
         }
     }
+
+
+class TaskStatus(str, Enum):
+    """Enum for task status"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TaskResponse(BaseModel):
+    """Schema for task status response"""
+    
+    task_id: str = Field(..., description="Unique task identifier")
+    status: TaskStatus = Field(..., description="Current task status")
+    created_at: datetime = Field(..., description="Task creation timestamp")
+    started_at: Optional[datetime] = Field(None, description="Task start timestamp")
+    completed_at: Optional[datetime] = Field(None, description="Task completion timestamp")
+    seed_url: str = Field(..., description="URL being crawled")
+    max_pages: int = Field(..., description="Maximum pages to crawl")
+    progress: dict = Field(default={}, description="Task progress information")
+    result: Optional[CrawlResponse] = Field(None, description="Crawl result if completed")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+
+class ContentResponse(BaseModel):
+    """Schema for content retrieval response"""
+    
+    success: bool = Field(default=True, description="Whether retrieval was successful")
+    url: str = Field(..., description="Content URL")
+    title: Optional[str] = Field(None, description="Content title")
+    content: str = Field(..., description="Content text")
+    metadata: Optional[dict] = Field(None, description="Additional metadata")
