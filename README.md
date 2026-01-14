@@ -1,57 +1,97 @@
-# Crawler Microservice
+# Content Ingestion & Crawler Service
 
-A high-performance web crawler and scraper microservice built with FastAPI, BeautifulSoup4, and AsyncIO. Similar to Apify, this service provides a structured API for crawling websites, extracting content, and collecting metadata.
+A comprehensive content ingestion and processing microservice built with FastAPI, BeautifulSoup4, and PostgreSQL with pgvector. Similar to platforms like ElevenLabs and Apify, this service provides a unified API for ingesting content from multiple sources (URLs, files, text), processing with intelligent chunking, and enabling semantic search through vector embeddings.
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Recursive Web Crawling** - Follow links within the same domain automatically
-- **Domain Boundary Protection** - Automatically stays within the base domain
+### Multi-Source Content Ingestion
+- **File Upload Support** - PDF, DOCX, TXT, MD, HTML with automatic format detection
+- **Direct Text Input** - Ingest raw text content programmatically
+- **URL Crawling** - Recursive web crawling with domain boundary protection
+- **Batch Processing** - Upload and process multiple files simultaneously
+
+### Advanced Text Processing
+- **Smart Chunking** - Intelligent text splitting optimized for RAG systems
+  - 512 token chunks with 100 token overlap
+  - Multiple strategies: recursive, paragraph, sentence-based
+  - Context preservation at chunk boundaries
+- **Vector Embeddings** - Automatic embedding generation using `sentence-transformers`
+- **Deduplication** - SHA-256 hash-based content deduplication
+- **Metadata Extraction** - Word count, file type, timestamps automatically tracked
+
+### Semantic Search & Retrieval
+- **Vector Similarity Search** - Find relevant content using cosine similarity
+- **PostgreSQL with pgvector** - Production-ready vector storage
+- **Chunk-Level Search** - Search at chunk granularity for precise results
+- **Filters** - Filter by source type, base URL, or date range
+
+### Web Crawling Capabilities
+- **Recursive Crawling** - Follow links within the same domain automatically
 - **Content Extraction** - Extract titles, text content, and image URLs
 - **Asynchronous Processing** - Concurrent page fetching with configurable limits
 - **Error Handling** - Graceful handling of timeouts, 404s, and network errors
-- **Batch Operations** - Crawl multiple domains in a single request
-- **Structured Output** - Clean JSON responses with comprehensive metadata
 - **Rate Limiting** - Configurable concurrency and retry logic
 
 ## 🏗️ Architecture
 
-The service follows a clean layered architecture pattern:
-
 ```
-app/
-├── api/                      # HTTP Layer
-│   └── v1/
-│       └── endpoints/
-│           └── crawler.py    # API route handlers
-├── core/                     # Cross-cutting concerns
-│   └── config.py            # Configuration and settings
-├── services/                 # Business Logic Layer
-│   └── crawler.py           # Crawling and scraping logic
-├── schemas/                  # Data Validation
-│   └── crawler.py           # Pydantic request/response models
-├── models/                   # Data Models
-└── main.py                  # FastAPI application setup
+crawler-service/
+├── app/
+│   ├── api/v1/endpoints/
+│   │   ├── ingestion.py       # File/text upload endpoints
+│   │   └── crawler.py          # Web crawling endpoints
+│   ├── services/
+│   │   ├── content_ingestion.py   # Unified ingestion logic
+│   │   ├── file_processor.py      # File parsing (PDF, DOCX, etc.)
+│   │   ├── text_chunker.py        # Smart chunking algorithms
+│   │   ├── vector_db_service.py   # Vector embeddings & search
+│   │   ├── crawler.py             # Web crawling logic
+│   │   └── task_manager.py        # Background task handling
+│   ├── models/
+│   │   └── content_manager.py  # Database models
+│   ├── schemas/
+│   │   ├── ingestion.py        # Ingestion request/response models
+│   │   └── crawler.py          # Crawler request/response models
+│   ├── core/
+│   │   ├── config.py           # Configuration
+│   │   └── database.py         # Database connection
+│   └── main.py                 # FastAPI application
+├── uploads/                    # File upload storage
+├── demo_chunking.py            # Interactive chunking demo
+├── verify_chunking.py          # Chunking verification script
+└── docker-compose.yml          # Docker orchestration
 ```
 
 ## 📋 Requirements
 
 - Python 3.11+
-- FastAPI
-- Uvicorn
-- httpx (async HTTP client)
+- PostgreSQL 14+ with pgvector extension
+- FastAPI, Uvicorn
+- SQLAlchemy (async)
+- httpx (async HTTP)
 - BeautifulSoup4 (HTML parsing)
-- Pydantic (data validation)
+- sentence-transformers (embeddings)
+- PyPDF2, python-docx (file processing)
 
 See `requirements.txt` for complete dependencies.
 
 ## 📦 Installation
 
+### Docker (Recommended)
+
+```bash
+# Clone and navigate to project
+cd crawler-service
+
+# Start all services (FastAPI + PostgreSQL)
+docker-compose up --build
+
+# The service will be available at http://localhost:8001
+```
+
 ### Local Development
 
 ```bash
-# Clone the repository
-cd crowler-service
-
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -59,326 +99,551 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the application
+# Set up PostgreSQL with pgvector
+./setup_pgvector.sh
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your database credentials
+
+# Run migrations
+python migrate_to_content_manager.py
+python migrate_add_ingestion_fields.py
+python migrate_add_chunks_table.py
+
+# Start the server
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-### Docker
-
-```bash
-# Build and run with Docker Compose
-docker-compose up --build
-
-# Or build and run manually
-docker build -t crawler-service .
-docker run -p 8001:8001 crawler-service
-```
-
-The service will be available at `http://localhost:8001`
-
 ## 🔌 API Endpoints
 
-### Health Check
+### Content Ingestion Endpoints
+
+#### Upload File
 ```http
-GET /api/v1/crawler/health
+POST /api/v1/ingestion/upload/file
+Content-Type: multipart/form-data
+
+file: <file>
+title: "Optional Title"
 ```
 
-Returns:
+**Supported Formats:** PDF, DOCX, TXT, MD, HTML
+
+**Response:**
 ```json
 {
-  "status": "healthy",
-  "service": "crawler-microservice"
+  "success": true,
+  "content_id": "550e8400-e29b-41d4-a716-446655440000",
+  "source_type": "pdf",
+  "title": "Document Title",
+  "file_path": "uploads/document.pdf",
+  "text_preview": "First 200 characters...",
+  "word_count": 1250,
+  "chunks_created": 5,
+  "vector_stored": true,
+  "message": "File uploaded and processed successfully"
 }
 ```
 
-### Basic Crawl
+#### Upload Text
 ```http
-POST /api/v1/crawler/crawl
+POST /api/v1/ingestion/upload/text
 Content-Type: application/json
 
 {
-  "seed_url": "https://example.com",
-  "max_pages": 50,
-  "follow_external_links": false
+  "text_content": "Your text content here...",
+  "title": "Optional Title",
+  "source_identifier": "optional-id",
+  "metadata": {}
 }
 ```
 
-**Parameters:**
-- `seed_url` (required, HttpUrl): Starting URL to crawl
-- `max_pages` (optional, int): Maximum pages to crawl (1-500, default: 50)
-- `follow_external_links` (optional, bool): Follow links outside base domain (default: false)
+#### Batch Upload
+```http
+POST /api/v1/ingestion/upload/batch
+Content-Type: multipart/form-data
+
+files: [<file1>, <file2>, <file3>]
+```
+
+**Response:**
+```json
+{
+  "total_files": 3,
+  "successful": 2,
+  "failed": 1,
+  "results": [
+    {
+      "filename": "doc1.pdf",
+      "success": true,
+      "content_id": "...",
+      "chunks_created": 5
+    },
+    {
+      "filename": "doc2.pdf",
+      "success": false,
+      "error": "Unsupported file type"
+    }
+  ]
+}
+```
+
+#### List Content
+```http
+GET /api/v1/ingestion/content/list?source_type=pdf&limit=50&offset=0
+```
+
+**Response:**
+```json
+{
+  "total": 100,
+  "items": [
+    {
+      "content_id": "550e8400-e29b-41d4-a716-446655440000",
+      "source_type": "pdf",
+      "title": "Document Title",
+      "word_count": 1250,
+      "created_at": "2024-01-14T10:30:00Z"
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}
+```
+
+#### Get Ingestion Statistics
+```http
+GET /api/v1/ingestion/stats
+```
+
+**Response:**
+```json
+{
+  "total_content": 150,
+  "by_source_type": {
+    "pdf": {"count": 50, "total_words": 125000},
+    "url": {"count": 75, "total_words": 200000},
+    "text": {"count": 25, "total_words": 50000}
+  },
+  "total_chunks": 1250,
+  "total_words": 375000
+}
+```
+
+### Web Crawling Endpoints
+
+#### Crawl Website
+```http
+POST /api/v1/crawler/crawl
+Content-Type: application/x-www-form-urlencoded
+
+seed_url=https://example.com
+max_pages=50
+follow_external_links=false
+```
 
 **Response:**
 ```json
 {
   "success": true,
   "base_url": "https://example.com",
-  "total_pages_crawled": 5,
-  "total_pages_requested": 10,
+  "total_pages_crawled": 25,
   "pages": [
     {
       "url": "https://example.com/page1",
-      "title": "Example Page",
-      "text_content": "Full page content here...",
-      "content_snippet": "Full page content here...",
-      "images": [
-        {
-          "url": "https://example.com/image.jpg",
-          "alt_text": "Example image"
-        }
-      ],
-      "images_count": 1,
-      "crawl_timestamp": "2024-01-12T10:30:45Z"
+      "title": "Page Title",
+      "text_content": "Full content...",
+      "images_count": 3,
+      "content_id": "uuid-here",
+      "chunks_created": 4
     }
   ],
-  "errors": [],
-  "crawl_duration_seconds": 12.5
+  "crawl_duration_seconds": 15.3
 }
 ```
 
-### Batch Crawl
+#### Batch Crawl
 ```http
 POST /api/v1/crawler/crawl/batch
 Content-Type: application/json
 
 [
-  {
-    "seed_url": "https://example1.com",
-    "max_pages": 20
-  },
-  {
-    "seed_url": "https://example2.com",
-    "max_pages": 30
-  }
+  {"seed_url": "https://example1.com", "max_pages": 20},
+  {"seed_url": "https://example2.com", "max_pages": 30}
 ]
 ```
 
-**Constraints:**
-- Maximum 10 URLs per batch request
-- Each crawl is independent with its own domain boundary
+#### Semantic Search
+```http
+POST /api/v1/crawler/search
+Content-Type: application/x-www-form-urlencoded
+
+query=What are neural networks?
+top_k=5
+base_url_filter=https://example.com
+```
 
 **Response:**
 ```json
 {
-  "batch_results": {
-    "https://example1.com": {
-      "success": true,
-      "data": { ... }
-    },
-    "https://example2.com": {
-      "success": true,
-      "data": { ... }
+  "query": "What are neural networks?",
+  "results": [
+    {
+      "content_id": "550e8400-e29b-41d4-a716-446655440000",
+      "title": "Neural Networks Guide",
+      "chunk_text": "Neural networks are...",
+      "similarity_score": 0.89,
+      "url": "https://example.com/neural-nets",
+      "source_type": "url"
     }
-  }
+  ],
+  "total_results": 5
 }
 ```
 
-### Domain Info
+#### Get Content by URL
 ```http
-GET /api/v1/crawler/crawl/domains/{domain}
+GET /api/v1/crawler/content/{url}
 ```
 
-Returns information about a domain's crawl status.
+#### Vector Database Stats
+```http
+GET /api/v1/crawler/stats/vector
+```
+
+### Health Check
+```http
+GET /api/v1/crawler/health
+```
+
+## 🧠 Smart Chunking System
+
+The service implements intelligent text chunking following 2024 best practices for RAG systems:
+
+### Chunking Configuration
+- **Chunk Size:** 512 tokens (~2000 characters)
+- **Overlap:** 100 tokens (~400 characters, 20% overlap)
+- **Strategy:** Recursive splitting (paragraphs → sentences → words)
+
+### Strategies Available
+
+1. **Recursive (Recommended)** - Splits at natural boundaries
+   ```python
+   chunks = text_chunker.chunk_text(text, strategy="recursive")
+   ```
+
+2. **Paragraph-based** - Best for documents with clear structure
+   ```python
+   chunks = text_chunker.chunk_text(text, strategy="paragraphs")
+   ```
+
+3. **Sentence-based** - Best for FAQ, Q&A, precise fact retrieval
+   ```python
+   chunks = text_chunker.chunk_text(text, strategy="sentences")
+   ```
+
+### Why Chunking?
+
+**Without Chunking:**
+- Large documents truncated to 5000 chars → information loss
+- Search returns entire document → user reads irrelevant content
+- Poor precision in retrieval
+
+**With Chunking:**
+- No information loss → all content preserved
+- Search returns only relevant chunks → precise results
+- Better user experience → less reading required
+
+### Try the Demo!
+
+```bash
+python demo_chunking.py
+```
+
+This interactive demo shows:
+- How documents are split into chunks
+- Chunk overlap visualization
+- Simulated search results
+- Comparison with/without chunking
 
 ## 🔧 Configuration
 
-Configuration is managed through environment variables in `.env` or via `docker-compose.yml`:
+Configure via environment variables in `.env`:
 
 ```env
 # Application
-APP_NAME=Crawler Microservice
-APP_VERSION=1.0.0
+APP_NAME=Content Ingestion Service
+APP_VERSION=2.0.0
 DEBUG=False
-LOG_LEVEL=INFO
 
 # Server
 HOST=0.0.0.0
 PORT=8001
 
+# Database (PostgreSQL with pgvector)
+DATABASE_URL=postgresql://user:pass@localhost:5432/crawler_db
+
+# Vector Storage
+VECTOR_STORAGE_ENABLED=true
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+EMBEDDING_DIMENSION=384
+
+# Chunking Configuration
+CHUNK_SIZE=512                  # tokens
+CHUNK_OVERLAP=100              # tokens
+CHUNKING_STRATEGY=recursive
+
 # Crawler Settings
-MAX_CONCURRENT_REQUESTS=5          # Concurrent page fetches
-REQUEST_TIMEOUT=30                 # Request timeout in seconds
-DEFAULT_MAX_PAGES=50               # Default page limit
-MAX_ALLOWED_PAGES=500              # Maximum allowed pages
+MAX_CONCURRENT_REQUESTS=5
+REQUEST_TIMEOUT=30
+DEFAULT_MAX_PAGES=50
+MAX_ALLOWED_PAGES=500
 
-# HTTP Client
-USER_AGENT=CrawlerBot/1.0
-MAX_RETRIES=3
-RETRY_DELAY=2
+# File Upload
+UPLOAD_DIR=uploads
+MAX_UPLOAD_SIZE=10485760       # 10MB
+ALLOWED_EXTENSIONS=pdf,docx,txt,md,html
 
-# Content Extraction
-CONTENT_SNIPPET_LENGTH=200         # Character limit for snippet
-MAX_CONTENT_LENGTH=10000           # Character limit per page
+# Content Processing
+CONTENT_SNIPPET_LENGTH=200
+MAX_CONTENT_LENGTH=100000
 ```
 
-## 📊 How It Works
+## 📊 Data Models
 
-### Crawling Algorithm
+### ContentManager Table
+Stores all ingested content with unified schema:
 
-1. **Initialize**: Start with a seed URL, extract base domain
-2. **Queue Management**: Add seed URL to crawl queue, mark as visited
-3. **Concurrent Fetching**: Fetch multiple pages simultaneously (within concurrency limit)
-4. **Parsing**: Parse HTML with BeautifulSoup, extract:
-   - Page title
-   - Text content
-   - Image URLs with alt text
-   - Internal links
-5. **Link Discovery**: Add new, unvisited links from same domain to queue
-6. **Rate Control**: Small delays between batches to avoid overwhelming server
-7. **Boundary Check**: All discovered links checked to stay within base domain
-8. **Response**: Return structured data with all crawled pages and metadata
+```python
+{
+  "content_id": "UUID",
+  "source_type": "url|pdf|docx|txt|md|html|text",
+  "source_identifier": "URL or file path",
+  "title": "Content title",
+  "content_text": "Full text content",
+  "content_hash": "SHA-256 hash",
+  "word_count": 1250,
+  "embedding": "vector(384)",  # pgvector
+  "metadata": {},  # JSONB
+  "created_at": "timestamp",
+  "updated_at": "timestamp"
+}
+```
 
-### Key Components
+### ContentChunk Table
+Stores text chunks with embeddings for RAG:
 
-#### CrawlerService (`app/services/crawler.py`)
-- Core crawling logic with async operations
-- Manages visited URLs, crawl queue, and batch processing
-- Handles URL normalization and domain boundary checking
-- Parses HTML and extracts content, images, and links
-- Error tracking and graceful failure handling
-
-#### API Endpoints (`app/api/v1/endpoints/crawler.py`)
-- RESTful interface for crawling operations
-- Request validation using Pydantic schemas
-- Comprehensive error handling and HTTP status codes
-- Support for single and batch crawling
-
-#### Schemas (`app/schemas/crawler.py`)
-- `CrawlRequest`: Validates input parameters
-- `PageContent`: Structure for extracted page data
-- `ImageData`: Image information with alt text
-- `CrawlResponse`: Complete crawl results
-- `CrawlErrorResponse`: Standardized error format
+```python
+{
+  "chunk_id": "UUID",
+  "content_id": "UUID (foreign key)",
+  "chunk_index": 0,
+  "chunk_text": "Chunk content...",
+  "start_char": 0,
+  "end_char": 2000,
+  "token_count": 512,
+  "embedding": "vector(384)",
+  "metadata": {},
+  "created_at": "timestamp"
+}
+```
 
 ## 🛡️ Error Handling
 
 The service handles various error conditions gracefully:
 
-- **Timeout Errors**: Request timeout handling with configurable duration
-- **HTTP Errors**: 404 and other HTTP error tracking
-- **Network Errors**: Connection failures and DNS resolution issues
-- **Parsing Errors**: Malformed HTML or missing elements
-- **Invalid URLs**: URL validation and normalization
+- **File Processing Errors** - Unsupported formats, corrupted files
+- **Duplication** - Hash-based detection with informative messages
+- **Database Errors** - Connection issues, constraint violations
+- **Timeout Errors** - Request timeout handling
+- **HTTP Errors** - 404 and other HTTP error tracking
+- **Network Errors** - Connection failures and DNS issues
+- **Parsing Errors** - Malformed HTML or document structure
 
-All errors are collected and returned in the response for visibility.
-
-## 🚦 Rate Limiting & Concurrency
-
-### Concurrency Control
-- Configurable `MAX_CONCURRENT_REQUESTS` (default: 5)
-- Prevents overwhelming target servers
-- Batch processing with inter-batch delays
-
-### Request Timeouts
-- Configurable `REQUEST_TIMEOUT` (default: 30 seconds)
-- Prevents hanging requests
-- Graceful timeout error handling
-
-### Retry Logic
-- Configurable `MAX_RETRIES` (default: 3)
-- Exponential backoff with `RETRY_DELAY`
-- Automatic retry on transient failures
+All errors return structured responses with clear messages.
 
 ## 📈 Performance Characteristics
 
-- **Async Processing**: Uses Python's asyncio for efficient concurrent operations
-- **Memory Efficient**: Processes pages in batches, doesn't load all at once
-- **Scalable**: Concurrency limits prevent resource exhaustion
-- **Fast**: Typical crawl of 50 pages completes in 10-30 seconds
+- **Async Processing** - Uses asyncio for concurrent operations
+- **Batch Operations** - Process multiple files efficiently
+- **Connection Pooling** - PostgreSQL connection management
+- **Vector Indexing** - Fast similarity search with pgvector
+- **Chunking Overhead** - Minimal (~100ms for 10,000 words)
+- **Typical Performance**:
+  - PDF processing: 1-3 seconds
+  - URL crawling (50 pages): 10-30 seconds
+  - Semantic search: 50-200ms
+  - Batch upload (10 files): 10-30 seconds
 
-## 🧪 Testing
+## 🧪 Testing & Verification
 
+### Verify Chunking
 ```bash
-# Run tests
-pytest tests/
+# Check chunking functionality
+python verify_chunking.py
+```
 
-# Run with coverage
-pytest --cov=app tests/
+### Interactive Demo
+```bash
+# See chunking in action
+python demo_chunking.py
+```
 
-# Run async tests
-pytest -v -s tests/
+### View Content
+```bash
+# View stored content
+python view_content.py
+```
+
+### Test Crawler
+```bash
+# Test crawler functionality
+python test_crawler.py
 ```
 
 ## 📝 Example Usage
 
-### Using Python Requests
+### Python Example - File Upload
 
 ```python
 import requests
-import json
 
-# Basic crawl
-response = requests.post('http://localhost:8001/api/v1/crawler/crawl', json={
-    'seed_url': 'https://example.com',
-    'max_pages': 20
-})
-
-crawl_data = response.json()
-print(f"Crawled {crawl_data['total_pages_crawled']} pages")
-print(f"Duration: {crawl_data['crawl_duration_seconds']:.2f} seconds")
-
-# Batch crawl
-batch_response = requests.post('http://localhost:8001/api/v1/crawler/crawl/batch', json=[
-    {'seed_url': 'https://example1.com', 'max_pages': 15},
-    {'seed_url': 'https://example2.com', 'max_pages': 20}
-])
-
-batch_data = batch_response.json()
-for url, result in batch_data['batch_results'].items():
-    if result['success']:
-        print(f"✓ {url}: {result['data']['total_pages_crawled']} pages")
-    else:
-        print(f"✗ {url}: {result['error']}")
+# Upload a file
+with open('document.pdf', 'rb') as f:
+    files = {'file': f}
+    data = {'title': 'My Document'}
+    response = requests.post(
+        'http://localhost:8001/api/v1/ingestion/upload/file',
+        files=files,
+        data=data
+    )
+    result = response.json()
+    print(f"Uploaded: {result['content_id']}")
+    print(f"Chunks created: {result['chunks_created']}")
 ```
 
-### Using cURL
+### Python Example - Text Ingestion
+
+```python
+import requests
+
+# Ingest text
+response = requests.post(
+    'http://localhost:8001/api/v1/ingestion/upload/text',
+    json={
+        'text_content': 'Your long text content here...',
+        'title': 'Article Title',
+        'metadata': {'author': 'John Doe', 'category': 'AI'}
+    }
+)
+result = response.json()
+print(f"Content ID: {result['content_id']}")
+```
+
+### Python Example - Semantic Search
+
+```python
+import requests
+
+# Search for content
+response = requests.post(
+    'http://localhost:8001/api/v1/crawler/search',
+    data={
+        'query': 'What are neural networks?',
+        'top_k': 5
+    }
+)
+results = response.json()
+
+for item in results['results']:
+    print(f"Title: {item['title']}")
+    print(f"Score: {item['similarity_score']:.2f}")
+    print(f"Text: {item['chunk_text'][:200]}...")
+    print()
+```
+
+### cURL Examples
 
 ```bash
-# Health check
-curl http://localhost:8001/api/v1/crawler/health
+# Upload file
+curl -X POST http://localhost:8001/api/v1/ingestion/upload/file \
+  -F "file=@document.pdf" \
+  -F "title=My Document"
 
-# Single crawl
-curl -X POST http://localhost:8001/api/v1/crawler/crawl \
+# Ingest text
+curl -X POST http://localhost:8001/api/v1/ingestion/upload/text \
   -H "Content-Type: application/json" \
   -d '{
-    "seed_url": "https://example.com",
-    "max_pages": 20
+    "text_content": "Your content here...",
+    "title": "Article Title"
   }'
 
-# Batch crawl
-curl -X POST http://localhost:8001/api/v1/crawler/crawl/batch \
-  -H "Content-Type: application/json" \
-  -d '[
-    {"seed_url": "https://example1.com", "max_pages": 15},
-    {"seed_url": "https://example2.com", "max_pages": 20}
-  ]'
+# Search content
+curl -X POST http://localhost:8001/api/v1/crawler/search \
+  -d "query=neural networks" \
+  -d "top_k=5"
+
+# List content
+curl http://localhost:8001/api/v1/ingestion/content/list?source_type=pdf&limit=10
+
+# Get stats
+curl http://localhost:8001/api/v1/ingestion/stats
 ```
 
 ## 📚 Documentation
 
-- **Interactive API Docs**: Available at `http://localhost:8001/docs` (Swagger UI)
-- **ReDoc Documentation**: Available at `http://localhost:8001/redoc`
-- **OpenAPI Schema**: Available at `http://localhost:8001/openapi.json`
+- **Interactive API Docs**: `http://localhost:8001/docs` (Swagger UI)
+- **ReDoc Documentation**: `http://localhost:8001/redoc`
+- **OpenAPI Schema**: `http://localhost:8001/openapi.json`
 
 ## 🔄 Integration with Other Services
 
-The crawler service is designed to work as a microservice in a distributed architecture:
+The service is designed as a microservice for distributed architectures:
 
-- **Async Operations**: Non-blocking API suitable for event-driven architectures
-- **Stateless Design**: Can be scaled horizontally
-- **Docker Ready**: Containerized for easy deployment
-- **Clean API**: RESTful interface for easy integration
-- **Error Tracking**: Comprehensive error reporting for monitoring
+- **RESTful API** - Easy integration with any language/framework
+- **Async Operations** - Non-blocking for event-driven architectures
+- **Stateless Design** - Horizontal scaling ready
+- **Docker Ready** - Containerized deployment
+- **Database Backed** - Persistent storage with PostgreSQL
+- **Vector Search** - Integrate with RAG systems, chatbots, knowledge bases
 
 ## 🚀 Deployment
 
-### Docker Compose
-```bash
-docker-compose up -d
+### Docker Compose (Production)
+
+```yaml
+version: '3.8'
+services:
+  postgres:
+    image: ankane/pgvector
+    environment:
+      POSTGRES_DB: crawler_db
+      POSTGRES_USER: crawler_user
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  crawler-service:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://crawler_user:secure_password@postgres:5432/crawler_db
+      VECTOR_STORAGE_ENABLED: "true"
+    depends_on:
+      - postgres
+    volumes:
+      - ./uploads:/app/uploads
+
+volumes:
+  pgdata:
 ```
 
 ### Kubernetes
-Create a deployment YAML:
+
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -400,9 +665,25 @@ spec:
         ports:
         - containerPort: 8001
         env:
-        - name: MAX_CONCURRENT_REQUESTS
-          value: "5"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: url
+        - name: VECTOR_STORAGE_ENABLED
+          value: "true"
 ```
+
+## 🎯 Use Cases
+
+1. **Knowledge Base Systems** - Ingest documents, enable semantic search
+2. **RAG Applications** - Chunk documents for retrieval-augmented generation
+3. **Content Management** - Unified storage for multi-source content
+4. **Web Scraping** - Automated content collection from websites
+5. **Document Processing** - Extract and process PDF, DOCX files
+6. **Q&A Systems** - Build question-answering systems with vector search
+7. **Research Tools** - Aggregate and search across research papers
+8. **Chatbot Knowledge** - Feed content to chatbots with semantic retrieval
 
 ## 🤝 Contributing
 
@@ -414,15 +695,20 @@ spec:
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License.
 
 ## 🙏 Acknowledgments
 
 - FastAPI for the excellent web framework
+- pgvector for vector similarity search
+- sentence-transformers for embeddings
 - BeautifulSoup4 for HTML parsing
-- httpx for async HTTP operations
-- Pydantic for data validation
+- PyPDF2 and python-docx for file processing
 
 ## 📞 Support
 
-For issues, questions, or suggestions, please open an issue on the repository or contact the development team.
+For issues, questions, or suggestions, please open an issue on the repository.
+
+---
+
+**Built with ❤️ for modern content ingestion and retrieval systems**
